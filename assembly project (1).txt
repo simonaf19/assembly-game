@@ -1,0 +1,340 @@
+﻿JMP main
+JMP isr
+
+;In order to play this game, click on the keyboard 
+;under the small screen, and use A and D keys to move.
+
+balloon: DB "\x00\x00\x03\x80\x07\xC0\x0F\xE0\x1F\xF0\x1F\xF0\x1F\xF0\x1F\xF0"
+                DB "\x0F\xE0\x07\xC0\x03\x80\x01\x00\x01\x00\x06\x00\x08\x00\x10\x00"
+title: DB "BALLOONLAND"
+        DB 0
+vsync: DW 0
+keypress: DW 0
+keydata: DW 0
+balloon_line: DB 0
+balloon_column: DB 0
+shooter_line: DB 10
+shooter_column: DB 14
+score: DB 48 ;ASCII code of 0
+score_over10: DB 48 ;ASCII code of 0
+
+
+draw_score:
+        MOV A, 0xA306 ;sprite 2
+    OUT 8
+    MOVB AH, [score]
+    MOVB AL, 252 ;color
+    OUT 9
+    
+    MOV A, 0xA308 ;2nd part
+    OUT 8
+    MOV A, 0x0DEE ;address at x,y in pixels
+    OUT 9
+    
+    MOV A, 0xA30A ;1st sprite
+    OUT 8
+    MOVB AH, [score]
+    MOVB AL, 252
+    OUT 9
+    MOV A, 0xA30D
+    OUT 8
+    MOV A, 0xEE00
+    OUT 9
+    RET
+
+
+isr:
+    PUSH A            
+    IN 1             ;read irq status 
+    CMP A, 4          ;is it vsync interrupt?
+    JNE isr_keyboard  
+    MOV [vsync], 1    ;update vsync flag
+    MOV A, 4          ;graphics interrupt handled
+    OUT 2            
+    JMP isr_return
+isr_keyboard:
+    IN 5              
+    AND A, 1          ;check keydown bit
+    CMP A, 1          
+    JNE isr_key_clear 
+    MOV [keypress], 1 ;set keypress flag.
+    IN 6                         ;which key has been pressed
+    MOV [keydata], A
+isr_key_clear:
+    IN 6              
+    MOV A, 1         
+    OUT 2             ;keyboard interrupt handled
+isr_return:
+    POP A             
+    IRET
+
+
+wait_frames:
+wait_frames_loop:
+  MOV A, [vsync] 
+  CMP A, 0 
+  JE wait_frames_loop 
+  MOV [vsync], 0 
+  DEC C
+  CMP C, 0
+  JE wait_frames_return 
+  JMP wait_frames_loop 
+wait_frames_return:
+        RET
+
+
+redefine:
+    MOV C, balloon ;pointer to balloon
+    MOV D, 0x8500 ;address of char that will be redefined
+    MOV B, 16
+redefine_loop:
+        CMP B, 0   ;16 lines need to be read
+    JE redefine_break
+    MOV A, D   
+    OUT 8
+    MOV A, [C] ;change char
+    OUT 9
+    DEC B
+    ADD C, 2  ;read next 2 
+    ADD D, 2
+    JMP redefine_loop
+redefine_break:
+        MOV A, 0xA300 ;background color definition
+    OUT 8              
+    MOV A, 0x33 
+    OUT 9
+    RET
+
+
+draw_title:
+    MOV C, title
+    MOV D, 0x1706
+draw_title_loop:
+    MOVB BH, [C] ;get first char of string
+    CMPB BH, 0 ;are we at its end?
+    JE draw_title_return
+    MOV A, D 
+    OUT 8 ;vram position -> VIDADDR
+    MOVB AH, BH ;ASCII code
+    MOVB AL, 0xEF ;color
+    OUT 9 ;VIDDATA
+    INC C ;next char
+    ADD D, 2 ;next cell
+    JMP draw_title_loop
+draw_title_return:
+        MOV C, 1000
+    MOV A, 0xA300 ;background color
+    OUT 8              
+    MOV A, 0x33 
+    OUT 9  
+    MOV A, 0xA304 ;scroll vertically
+    OUT 8
+scroll_loop:
+        CMP C, 0
+    JE scroll_break
+    MOV A, 256
+    SUB A, 30
+    OUT 9
+    DEC C
+        JMP scroll_loop
+scroll_break:
+        MOV A, 16  ;position of visible display
+    OUT 9 
+        RET
+ 
+draw_balloons:
+        MOVB AH, 0 ;line index
+    MOVB AL, [balloon_column] 
+    OUT 8
+    MOVB [balloon_line], AH
+    MOVB AH, 40 ;ascii code
+    MOVB AL, 227 ;color
+    OUT 9
+    MOVB [balloon_column], BL
+    ADDB BL, 4 ;go to 2*column index
+    CMPB BL, 30 ;is it last column position
+    JNE draw_balloons_return
+        MOVB BL, 2 ;if yes, reset to first position
+draw_balloons_return:
+        RET
+         
+draw_shooter:
+    MOVB AH, 10 ;line index
+    MOVB AL, 14 ;2*column index
+    OUT 8 ;
+    MOVB AH, 5 ;ASCII code
+    MOVB AL, 255 ;color
+    OUT 9
+    RET
+
+
+animation:
+        MOVB DH, [balloon_line]
+    MOVB DL, [balloon_column]
+shooter_move:
+        MOV C, [keypress] ;has a key been pressed
+    CMP C, 1
+    JNE shooter_move_return
+    MOV C, [keydata] 
+    CMP C, 'A' ;is it A?
+    JE moveleft ;if yes move to the left
+    MOV C, [keydata] 
+    CMP C, 'D';is it D?
+    JE moveright ;if yes move to the right
+    JMP shooter_move_return ;otherwise nothing
+moveleft:
+        ;Get the current position
+    MOVB AH, [shooter_line] 
+    MOVB AL, [shooter_column]
+    CMPB AL, 0            ;if it is the leftmost position of the visible display, stay there
+    JE shooter_move_return 
+    OUT 8    ;otherwise A -> VIDADDR
+    MOV A, 0  ;delete from current position
+    OUT 9
+    MOVB AH, [shooter_line]     
+    MOVB AL, [shooter_column]
+    SUBB AL, 2
+    MOVB [shooter_column], AL
+    OUT 8
+    IN 9      ;read data, is there a balloon?
+    CMP A, 0 
+    JNE shooter_reset    ;if yes reset shooter, update score
+    MOVB AH, 5 ;ASCII code
+    MOVB AL, 255 ;color
+    OUT 9
+    MOV [keypress], 0
+    MOV [keydata], 0
+    MOVB AL, [shooter_column]
+    JMP shooter_move
+moveright:
+        ;Get current position
+        MOVB AH, [shooter_line]
+    MOVB AL, [shooter_column]
+    CMPB AL, 30     ;if it is rightmost position return
+    JE shooter_move_return
+    OUT 8      
+    MOV A, 0   ;delete from this position
+    OUT 9
+    MOVB AH, [shooter_line] 
+    MOVB AL, [shooter_column]
+    ADDB AL, 2     ;add 2 to column to move right
+    MOVB [shooter_column], AL
+    OUT 8
+    IN 9    ;read data, is there a balloon?
+    CMP A, 0
+    JNE shooter_reset  ;if yes reset shooter and update score
+    MOVB AH, 5 ;ASCII code
+    MOVB AL, 255 ;color
+    OUT 9
+    ;reset keypress and data
+    MOV [keypress], 0
+    MOV [keydata], 0
+    MOVB AL, [shooter_column]
+    JMP shooter_move
+shooter_move_return:
+animation_loop:
+    MOVB AH, DH 
+    MOVB AL, DL
+    OUT 8 
+    MOV A, 0 ;delete
+    OUT 9
+        ADDB DH, 2 ;2 lines down
+    CMPB DH, 16 ;is it last line
+    JE animation_return
+    MOVB AH, DH ;otherwise take new position
+          MOVB AL, DL
+    OUT 8
+    IN 9   ;read data, is there the shooter?
+    CMP A, 0
+    JNE shooter_reset  ;if it's not empty we reset shooter and inc score
+    MOVB AH, 40 ;draw balloon
+    MOVB AL, 227 
+    OUT 9
+    MOV C, 7 ;wait 7 frames
+    CALL wait_frames
+    MOV C, [keypress]  ;has a key been pressed?
+    CMP C, 1 
+    JE shooter_move   ;if yes move shooter
+    JMP animation_loop
+    
+shooter_reset:
+;the shooter reset function redraws the shooter every time that a balloon is popped
+;(since the balloon shouldn't take this position and erase the shooter)
+        MOVB CL, [score] ;move score to CL to be used in next function
+        MOVB AH, DH   ;the position
+    MOVB AL, DL 
+    OUT 8 
+    MOVB AH, 5    ;ASCII code of shooter
+           MOVB AL, 255  ;white color
+    OUT 9
+           JMP update_score  ;updating the score since a balloon has been shot
+animation_return:
+    RET
+    
+update_score:
+        INCB CL    ;inc the score
+    MOVB [score], CL
+    CMPB CL, 57 ;is it above 9, do we need to update 1st sprite too?
+    JA update_score_over10
+        MOV A, 0xA306 ;2nd sprite
+    OUT 8
+    MOVB AH, [score]   ;update content
+    MOVB AL, 252       ;color
+    OUT 9
+    JMP update_score_return
+update_score_over10:
+        MOVB CL, 48 ;ascii code for 0
+    MOVB [score], CL
+    MOV A, 0xA306 ;2nd sprite
+    OUT 8
+    MOVB AH, [score] ;update score to 0 
+    MOVB AL, 252 ;color
+    OUT 9
+    MOVB CH, [score_over10] 
+    INCB CH   ;inscrease number of first digit
+    CMPB CH, 58 ;when it gets to 99 reset 
+    JE reset_score
+    MOVB [score_over10], CH  
+    MOV A, 0xA30A ;1st sprite
+    OUT 8
+    MOVB AH, CH ;score first digit
+    MOVB AL, 252 ;yellow color
+    OUT 9
+    JMP update_score_return
+reset_score:
+        ;set both digits to zero
+        MOVB [score], 48  
+    MOVB [score_over10], 48
+    MOV A, 0xA30A ;1st sprite
+    OUT 8
+    MOVB AH, [score_over10] ;score first digit
+    MOVB AL, 252
+    OUT 9
+update_score_return:
+    RET
+    
+main:
+        MOV SP, 0x0FFF
+    ;Enable textmode
+        MOV A, 1
+    OUT 7
+        ;Enable keyboard and graphics interrupts
+        MOV A, 5
+    OUT 0
+    STI
+           ;Setting up game
+         CALL draw_title
+    CALL draw_shooter
+    CALL redefine
+    CALL draw_score
+    ;Waiting 1 sec before animation begins 
+    MOV C, 50
+    CALL wait_frames
+    ;data needed for drawing balloons
+    MOVB BL, 2
+    MOVB [balloon_column], BL
+game_loop:
+           CALL draw_balloons
+    CALL animation
+    JMP game_loop
+    HLT
